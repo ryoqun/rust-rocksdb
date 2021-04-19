@@ -52,10 +52,38 @@ pub struct ColumnFamily {
 /// single-threaded mode). `Clone`/`Copy` is safe because this lifetime is bound to DB like
 /// iterators/snapshots. On top of it, this is as cheap and small as `&ColumnFamily` because
 /// this only has a single pointer-wide field.
-#[derive(Clone, Copy)]
 pub struct BoundColumnFamily<'a> {
     pub(crate) inner: *mut ffi::rocksdb_column_family_handle_t,
     pub(crate) multi_threaded_cfs: std::marker::PhantomData<&'a MultiThreaded>,
+}
+
+// internal struct which is exposed to public api only after transmute()-ing to BoundColumnFamily
+pub(crate) struct UnboundColumnFamily {
+    pub(crate) inner: *mut ffi::rocksdb_column_family_handle_t,
+}
+
+fn destroy_handle(handle: *mut ffi::rocksdb_column_family_handle_t) {
+    unsafe {
+        ffi::rocksdb_column_family_handle_destroy(handle);
+    }
+}
+
+impl Drop for ColumnFamily {
+    fn drop(&mut self) {
+        destroy_handle(self.inner);
+    }
+}
+
+impl<'a> Drop for BoundColumnFamily<'a> {
+    fn drop(&mut self) {
+        destroy_handle(self.inner);
+    }
+}
+
+impl Drop for UnboundColumnFamily {
+    fn drop(&mut self) {
+        destroy_handle(self.inner);
+    }
 }
 
 /// Handy type alias to hide actual type difference to reference [`ColumnFamily`]
@@ -64,12 +92,18 @@ pub struct BoundColumnFamily<'a> {
 pub type ColumnFamilyRef<'a> = &'a ColumnFamily;
 
 #[cfg(feature = "multi-threaded-cf")]
-pub type ColumnFamilyRef<'a> = BoundColumnFamily<'a>;
+pub type ColumnFamilyRef<'a> = std::sync::Arc<BoundColumnFamily<'a>>;
 
 /// Utility trait to accept both supported references to `ColumnFamily`
 /// (`&ColumnFamily` and `BoundColumnFamily`)
 pub trait AsColumnFamilyRef {
     fn inner(&self) -> *mut ffi::rocksdb_column_family_handle_t;
+}
+
+impl AsColumnFamilyRef for ColumnFamily {
+    fn inner(&self) -> *mut ffi::rocksdb_column_family_handle_t {
+        self.inner
+    }
 }
 
 impl<'a> AsColumnFamilyRef for &'a ColumnFamily {
@@ -78,7 +112,7 @@ impl<'a> AsColumnFamilyRef for &'a ColumnFamily {
     }
 }
 
-impl<'a> AsColumnFamilyRef for BoundColumnFamily<'a> {
+impl<'a> AsColumnFamilyRef for std::sync::Arc<BoundColumnFamily<'a>> {
     fn inner(&self) -> *mut ffi::rocksdb_column_family_handle_t {
         self.inner
     }
